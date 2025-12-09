@@ -1,0 +1,711 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Meditative MIDI Melody Generator</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; margin: 18px; color:#111; background: #f6fbfb; }
+    h1 { margin-top: 0; }
+    label { display:block; margin-top:8px; font-weight:600; }
+    select,input[type="number"],input[type="text"] { width: 160px; padding:6px; margin-top:4px; }
+    .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
+    .controls { background: white; padding: 12px; border-radius:8px; box-shadow: 0 2px 8px rgba(10,20,25,0.04); max-width:920px; }
+    button { padding:8px 12px; border-radius:6px; border:1px solid #cfe7e7; background:#eaf6f6; cursor:pointer; }
+    button.strong { background:#2d9ab3; color:white; border-color:#2d9ab3; }
+    button.ghost { background:transparent; border:1px dashed #cfe7e7; }
+    .cols { display:grid; grid-template-columns: 1fr 1fr; gap:14px; }
+    .footer { margin-top:14px; color:#444; font-size:13px; }
+    .small { font-size:13px; color:#444; }
+    pre { background:#fff; padding:10px; border-radius:6px; overflow:auto; max-height:120px; }
+    .status { margin-top:8px; color:#2d6; font-weight:600; }
+  </style>
+  <!-- Tone.js for WebAudio scheduling and synths -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.39/Tone.min.js"></script>
+  <!-- MidiWriterJS for MIDI file export -->
+  <script src="https://cdn.jsdelivr.net/npm/midi-writer-js@2.1.1/build/MidiWriter.min.js"></script>
+</head>
+<body>
+  <h1>Meditative Melody & Backing Generator</h1>
+  <div class="controls">
+    <div class="cols">
+      <div>
+        <label>Key</label>
+        <select id="key">
+          <option>C</option><option>G</option><option>D</option><option>A</option><option>E</option>
+          <option>B</option><option>F#</option><option>F</option><option>Bb</option><option>Eb</option>
+          <option>Ab</option><option>Db</option><option>Gb</option>
+        </select>
+
+        <label>Scale</label>
+        <select id="scale">
+          <option value="major">Major</option>
+          <option value="minor">Minor</option>
+          <option value="harmonic">Harmonic Minor</option>
+          <option value="melodic">Melodic Minor</option>
+          <option value="pentatonic">Major Pentatonic</option>
+          <option value="minorpent">Minor Pentatonic</option>
+        </select>
+
+        <label>BPM (meditative slow)</label>
+        <input id="bpm" type="number" min="30" max="80" value="48"/>
+
+        <label>Bars</label>
+        <input id="bars" type="number" min="1" max="32" value="8" />
+
+        <label>Seed (optional — leave blank for random)</label>
+        <input id="seed" type="text" placeholder="e.g. 42" />
+
+        <div style="margin-top:10px">
+          <button id="generate" class="strong">Generate</button>
+          <button id="randomize" class="ghost">Randomize Seed</button>
+        </div>
+      </div>
+
+      <div>
+        <label>Melody instrument / texture</label>
+        <select id="melodyInst">
+          <option value="sine">Soft Sine</option>
+          <option value="fm">FM Bell</option>
+          <option value="triangle">Warm Triangle</option>
+          <option value="plucky">Plucky (soft)</option>
+        </select>
+
+        <label>Backing instrument / pad</label>
+        <select id="chordInst">
+          <option value="pad">Warm Pad</option>
+          <option value="softSaw">Soft Saw</option>
+          <option value="organ">Gentle Organ</option>
+          <option value="strings">Strings</option>
+        </select>
+
+        <label>Chord density</label>
+        <select id="chordDensity">
+          <option value="1">Long chords (1 per bar)</option>
+          <option value="2">Two changes per bar</option>
+          <option value="4">Four changes per bar</option>
+        </select>
+
+        <label>Melody presence</label>
+        <div class="row">
+          <button id="playMelody" class="strong">Play Melody</button>
+          <button id="stopMelody" class="">Stop</button>
+        </div>
+
+        <label>Backing presence</label>
+        <div class="row">
+          <button id="playChords" class="strong">Play Chords</button>
+          <button id="stopChords">Stop</button>
+        </div>
+
+        <div class="row" style="margin-top:12px">
+          <button id="playBoth" class="strong">Play Both</button>
+          <button id="stopAll" class="">Stop All</button>
+        </div>
+
+        <div style="margin-top:10px">
+          <button id="exportMel" >Export Melody MIDI</button>
+          <button id="exportCh" >Export Chords MIDI</button>
+          <button id="exportBoth" >Export Both Tracks MIDI</button>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:14px">
+      <div class="small">Seed used:</div>
+      <pre id="seedDisplay">—</pre>
+      <div class="small" style="margin-top:6px">Preview / status:</div>
+      <div id="status" class="small">Ready.</div>
+      <div class="footer">
+        This is a simple web app that generates slow, meditative melodies and a matching chord backing. You can play melody and chords separately or together and export MIDI. For best listening experience, use headphones and a quieter environment.
+      </div>
+    </div>
+  </div>
+
+<script>
+/*
+  Meditative Melody + Backing Generator
+  - Uses Tone.js for playback
+  - Uses MidiWriterJS for MIDI export
+  - Simple seeded PRNG (mulberry32) for reproducible output
+  - Melody generation is scale-aware, biased to stepwise motion
+  - Chords are diatonic triads derived from the scale
+*/
+
+/* ---------- Utilities ---------- */
+function mulberry32(a) {
+  return function() {
+    var t = a += 0x6D2B79F5;
+    t = Math.imul(t ^ t >>> 15, t | 1);
+    t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  }
+}
+
+function seededRandomFromString(s) {
+  // Create 32-bit seed from string
+  if (!s) return Math.floor(Math.random()*1e9);
+  let h = 2166136261 >>> 0;
+  for (let i=0;i<s.length;i++) {
+    h ^= s.charCodeAt(i);
+    h += (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24);
+    h = h >>> 0;
+  }
+  return h >>> 0;
+}
+
+const NOTE_TO_SEMI = {
+  'C':0,'C#':1,'Db':1,'D':2,'D#':3,'Eb':3,'E':4,'F':5,'F#':6,'Gb':6,'G':7,'G#':8,'Ab':8,'A':9,'A#':10,'Bb':10,'B':11,'Cb':11,'E#':5,'B#':0
+};
+
+const SCALES = {
+  'major':        [2, 2, 1, 2, 2, 2, 1],
+  'minor':        [2, 1, 2, 2, 1, 2, 2],
+  'harmonic':     [2, 1, 2, 2, 1, 3, 1],
+  'melodic':      [2, 1, 2, 2, 2, 2, 1],
+  'pentatonic':   [2, 2, 3, 2, 3],
+  'minorpent':    [3, 2, 2, 3, 2],
+};
+
+function noteNameToMidi(name, octave) {
+  let n = name.trim();
+  // Normalize
+  if (n.length > 1 && n[1] !== '#' && n[1] !== 'b') n = n[0];
+  n = n[0].toUpperCase() + (n[1] || '');
+  let sem = NOTE_TO_SEMI[n];
+  if (sem === undefined) throw new Error("Unknown note "+name);
+  return 12 * (octave + 1) + sem;
+}
+
+function midiToNoteName(m) {
+  const names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+  const n = m % 12;
+  const octave = Math.floor(m/12) - 1;
+  return names[n] + octave;
+}
+
+function buildScale(key, scaleName, minOct=3, maxOct=6) {
+  if (!SCALES[scaleName]) throw new Error("Unknown scale");
+  const intervals = SCALES[scaleName];
+  const root = key.trim().replace('♯','#').replace('♭','b');
+  if (NOTE_TO_SEMI[root] === undefined) throw new Error("Unknown key");
+  // scale offsets in semitones from root (single octave)
+  let offsets = [0];
+  for (let step of intervals) offsets.push(offsets[offsets.length-1]+step);
+  // If offsets sum to 12, last is octave; omit last to avoid duplicate root in same octave
+  if (offsets[offsets.length-1] === 12) offsets = offsets.slice(0,-1);
+  let notes = [];
+  for (let oct=minOct; oct<=maxOct; oct++) {
+    const rootMidi = noteNameToMidi(root, oct);
+    for (let off of offsets) {
+      const midi = rootMidi + off;
+      if (midi >= 0 && midi <= 127) notes.push(midi);
+    }
+  }
+  notes = Array.from(new Set(notes)).sort((a,b)=>a-b);
+  return notes;
+}
+
+/* ---------- Melody & Rhythm Generation ---------- */
+
+function chooseInterval(rng) {
+  // Weighted discrete distribution similar to python version
+  const items = [
+    [-4,1],[-3,2],[-2,6],[-1,10],[0,4],[1,10],[2,6],[3,3],[4,2],[5,1],[7,0.5],[-7,0.5]
+  ];
+  const total = items.reduce((s,i)=>s+i[1],0);
+  let r = rng()*total;
+  for (let [val,w] of items) {
+    if (r < w) return val;
+    r -= w;
+  }
+  return 1;
+}
+
+function generateRhythm(totalBeats, rng, maxNotes=128) {
+  // For meditative music bias toward long durations
+  const DUR = [0.5,1,1.5,2,3,4]; // beats
+  let out = [];
+  let rem = totalBeats;
+  let attempts = 0;
+  while (rem > 1e-6 && attempts < 2000 && out.length < maxNotes) {
+    let possible = DUR.filter(d => d <= rem + 1e-9);
+    if (!possible.length) {
+      out.push(rem); break;
+    }
+    // bias: prefer longer durations (meditative)
+    let weights = possible.map(d => d); // longer d -> larger weight
+    // small random tweak
+    let sum = weights.reduce((a,b)=>a+b,0);
+    let r = rng()*sum;
+    let i=0;
+    while (r > weights[i]) { r -= weights[i]; i++; if (i>=weights.length) break; }
+    out.push(possible[i] || possible[0]);
+    rem -= out[out.length-1];
+    attempts++;
+  }
+  return out;
+}
+
+function generateMelody(scaleNotes, totalBars=8, beatsPerBar=4, rng, motifRepeatProb=0.12) {
+  if (!scaleNotes.length) throw new Error("Empty scale");
+  const totalBeats = totalBars * beatsPerBar;
+  const rhythm = generateRhythm(totalBeats, rng);
+  let notes = scaleNotes.slice();
+  let idx = Math.floor(notes.length/2);
+  // slight random starting shift
+  if (rng() < 0.5) idx += Math.round((rng()-0.5)*2);
+  idx = Math.max(0, Math.min(idx, notes.length-1));
+  let melody = [];
+  let motifBuffer = [];
+  for (let dur of rhythm) {
+    if (motifBuffer.length && rng() < motifRepeatProb) {
+      // repeat motif (short)
+      for (let i=0;i<Math.min(3,motifBuffer.length);i++) {
+        const m = motifBuffer[i];
+        melody.push({midi:m.note, dur: Math.min(m.dur,dur), vel: Math.round(80 + rng()*24)});
+      }
+      motifBuffer = [];
+      continue;
+    }
+    let interval = chooseInterval(rng);
+    let nextIdx = idx + interval;
+    nextIdx = Math.max(0, Math.min(nextIdx, notes.length-1));
+    let midi = notes[nextIdx];
+    // occasional octave scatter
+    if (rng() < 0.06) {
+      let shift = rng() < 0.5 ? -12 : 12;
+      if (midi+shift >=0 && midi+shift <=127) midi += shift;
+    }
+    melody.push({midi, dur, vel: Math.round(76 + rng()*28)});
+    if (rng() < 0.12 && motifBuffer.length < 8) motifBuffer.push({note:midi, dur});
+    idx = nextIdx;
+  }
+  return melody;
+}
+
+/* ---------- Chord Generation ---------- */
+
+function buildDiatonicTriad(scaleNotes, degreeIndex, targetOctaveBase) {
+  // scaleNotes is ordered ascending across octaves.
+  // Find a root index near targetOctaveBase and degreeIndex offset in scale degrees.
+  // degreeIndex is 0..(scaleDegrees-1) representing which degree in single octave (0=root degree, 1=2nd degree...)
+  // For simplicity, pick the first occurrence of a degree at or above target base.
+  // We need mapping from single-octave scale offsets to global indices; do by grouping by pitch class
+  // Simpler approach: find the root MIDI note nearest to targetOctaveBase*12 + rootSemitone.
+  const rootMidiApprox = targetOctaveBase*12;
+  // find a scale note with same scale degree remainder modulo octave by scanning
+  // We'll pick the scale note in scaleNotes that is >= rootMidiApprox and has the same pitch class as scaleNotes[degreeIndex mod scaleLen] when matched to first octave.
+  // Fallback: just pick nearest note to rootMidiApprox + degree offset in semitones.
+  // For simplicity: pick root as scaleNotes[ degreeIndex + baseIndex ] with baseIndex chosen so we stay in middle range.
+  // Let's pick a base index in the middle of scaleNotes and then add degreeIndex
+  const base = Math.floor(scaleNotes.length/2) - (scaleNotes.length % 7);
+  let rIdx = base + degreeIndex;
+  rIdx = Math.max(0, Math.min(rIdx, scaleNotes.length-1));
+  const root = scaleNotes[rIdx];
+  // Third and fifth are +2 and +4 scale steps
+  const thirdIdx = Math.min(scaleNotes.length-1, rIdx + 2);
+  const fifthIdx = Math.min(scaleNotes.length-1, rIdx + 4);
+  return [scaleNotes[rIdx], scaleNotes[thirdIdx], scaleNotes[fifthIdx]];
+}
+
+function generateChordProgression(scaleNotes, totalBars, beatsPerBar, density, rng) {
+  // density: number of chord changes per bar (1,2,4)
+  const changes = totalBars * density;
+  const stepBeats = beatsPerBar / density;
+  // Simple diatonic progressions palette (scale degrees in 0-based): I, vi, IV, V etc.
+  const progPalettes = {
+    'major': [
+      [0,3,4,0], // I - IV - V - I
+      [0,5,3,4], // I - vi - IV - V
+      [0,4,3,0]  // I - V - IV - I
+    ],
+    'minor': [
+      [0,4,3,0], // i - v - iv - i (degree mapping depends on scale)
+      [0,3,5,0],
+      [0,5,3,4]
+    ]
+  };
+  // we'll detect whether the scale is minor-ish by name later; for now pick palette by scale length and interval content
+  // For simplicity pick a mixed palette
+  let palette = progPalettes['major'];
+  // Build progression by repeating one of the palettes until we have enough chords
+  let prog = [];
+  let idx = 0;
+  const pal = palette[Math.floor(rng()*palette.length)];
+  while (prog.length < changes) {
+    prog.push(pal[idx % pal.length]);
+    idx++;
+  }
+  // flatten and convert per-change to triads
+  let chords = [];
+  for (let i=0;i<prog.length;i++) {
+    const degrees = prog[i]; // array of scale degrees for bar (we'll pick first)
+    // choose degree from the small array randomly (gives variety)
+    const deg = degrees[Math.floor(rng()*degrees.length)];
+    // pick triad; choose an octave base so chords sit lower than melody
+    const triad = buildDiatonicTriad(scaleNotes, deg, 3);
+    chords.push({notes: triad, dur: stepBeats});
+  }
+  return chords;
+}
+
+/* ---------- Tone.js synth setup ---------- */
+
+let melodyPart = null;
+let chordPart = null;
+let melodySynth = null;
+let chordSynth = null;
+let isPlaying = false;
+
+function createSynthFor(name) {
+  // returns a poly or mono synth configured for meditative sounds
+  if (name === 'sine') {
+    return new Tone.Synth({oscillator:{type:'sine'}, envelope:{attack:0.04,decay:0.4,sustain:0.8,release:1.6}}).toDestination();
+  } else if (name === 'fm') {
+    return new Tone.FMSynth({harmonicity:3, modulationIndex:2, envelope:{attack:0.01,decay:0.2,sustain:0.6,release:2}}).toDestination();
+  } else if (name === 'triangle') {
+    return new Tone.Synth({oscillator:{type:'triangle'}, envelope:{attack:0.06,decay:0.4,sustain:0.8,release:1.8}}).toDestination();
+  } else if (name === 'plucky') {
+    return new Tone.PluckSynth({attackNoise:0.01, dampening:4000}).toDestination();
+  } else if (name === 'pad') {
+    return new Tone.PolySynth(Tone.Synth, {
+      oscillator:{type:'sine'},
+      envelope:{attack:1.8, decay:1.2, sustain:0.8, release:6}
+    }).toDestination();
+  } else if (name === 'softSaw') {
+    return new Tone.PolySynth(Tone.Synth, {
+      oscillator:{type:'sawtooth'},
+      envelope:{attack:0.8, decay:0.8, sustain:0.7, release:4}
+    }).toDestination();
+  } else if (name === 'organ') {
+    return new Tone.PolySynth(Tone.Synth, {
+      oscillator:{partials:[1,0,0,1]},
+      envelope:{attack:0.4, decay:0.8, sustain:0.9, release:3}
+    }).toDestination();
+  } else if (name === 'strings') {
+    return new Tone.PolySynth(Tone.Synth, {
+      oscillator:{type:'sine'},
+      envelope:{attack:0.6, decay:0.6, sustain:0.85, release:5}
+    }).toDestination();
+  }
+  return new Tone.Synth().toDestination();
+}
+
+/* ---------- High level generate / play / export ---------- */
+
+let currentState = {
+  seed: null,
+  rng: Math.random,
+  melody: [],
+  chords: [],
+  scaleNotes: []
+};
+
+function setStatus(s) { document.getElementById('status').innerText = s; }
+
+async function generate() {
+  // prepare RNG
+  const seedText = document.getElementById('seed').value.trim();
+  let seedNum;
+  if (seedText) {
+    seedNum = seededRandomFromString(seedText);
+    currentState.seed = seedText;
+  } else {
+    seedNum = Math.floor(Math.random()*1e9);
+    currentState.seed = 'auto-' + seedNum;
+    document.getElementById('seed').value = currentState.seed;
+  }
+  document.getElementById('seedDisplay').innerText = String(currentState.seed);
+  const rng = mulberry32(seedNum);
+  currentState.rng = rng;
+
+  const key = document.getElementById('key').value;
+  const scale = document.getElementById('scale').value;
+  const bars = parseInt(document.getElementById('bars').value,10);
+  const bpm = parseInt(document.getElementById('bpm').value,10);
+  const density = parseInt(document.getElementById('chordDensity').value,10);
+
+  // Build scale
+  const scaleNotes = buildScale(key, scale, 3, 6);
+  currentState.scaleNotes = scaleNotes;
+
+  // Melody
+  const melody = generateMelody(scaleNotes, bars, 4, rng);
+  currentState.melody = melody;
+
+  // Chords
+  const chords = generateChordProgression(scaleNotes, bars, 4, density, rng);
+  currentState.chords = chords;
+
+  setStatus(`Generated ${melody.length} melody notes and ${chords.length} chord events at seed ${currentState.seed}. (BPM ${bpm})`);
+  // Prepare synths but do NOT start transport
+  if (melodySynth) melodySynth.dispose();
+  if (chordSynth) chordSynth.dispose();
+  melodySynth = createSynthFor(document.getElementById('melodyInst').value);
+  chordSynth = createSynthFor(document.getElementById('chordInst').value);
+
+  // Stop previous parts if any
+  stopAll();
+
+  // Create Tone Parts but do not start Tone.Transport here
+  // Melody part: schedule sequence of events at time offsets
+  melodyPart = new Tone.Part(((time, ev) => {
+    // ev: {midi, dur, vel}
+    melodySynth.triggerAttackRelease(midiToNoteName(ev.midi), ev.dur + 'n' /* placeholder */ , time, ev.vel/127);
+    // We will not rely on 'n' spec; instead use triggerAttack + release
+  }), []).start(0);
+  // But using triggerAttackRelease with note name and duration in s requires mapping beats to seconds.
+  // We'll schedule manually using triggerAttack and setTimeout-like release via Tone.Transport
+  melodyPart.clear();
+
+  chordPart = new Tone.Part(((time, ev) => {
+    chordSynth.triggerAttackRelease(ev.notes.map(midiToNoteName), ev.dur + 'n', time, 0.8);
+  }), []).start(0);
+  chordPart.clear();
+
+  // We'll instead create our own scheduling using Tone.Transport.schedule
+  // Build event arrays for export/playback mapping
+  // Create arrays with absolute times in beats
+  let t = 0;
+  for (let m of melody) {
+    // m.dur is in beats; store start (beats) and dur
+    m._start = t;
+    t += m.dur;
+  }
+  t = 0;
+  for (let c of chords) {
+    c._start = t;
+    t += c.dur;
+  }
+
+  currentState.bpm = bpm;
+  currentState.bars = bars;
+  currentState.beatsPerBar = 4;
+
+  // Dispose earlier scheduled callbacks if any
+  // We'll create functions for play that schedule fresh events into Transport.
+}
+
+function clearTransportListeners() {
+  // Cancel scheduled events on Transport
+  Tone.Transport.cancel(0);
+  // Remove parts if present
+  if (melodyPart) { melodyPart.dispose(); melodyPart = null; }
+  if (chordPart) { chordPart.dispose(); chordPart = null; }
+}
+
+async function playMelody() {
+  if (!currentState.melody || !currentState.melody.length) {
+    setStatus("Please generate first.");
+    return;
+  }
+  await Tone.start();
+  Tone.Transport.stop();
+  clearTransportListeners();
+
+  const bpm = currentState.bpm || 48;
+  Tone.Transport.bpm.value = bpm;
+  // create a simple synth if missing
+  melodySynth = melodySynth || createSynthFor(document.getElementById('melodyInst').value);
+
+  // Schedule melody notes
+  for (let ev of currentState.melody) {
+    const start = ev._start || 0;
+    const dur = ev.dur;
+    const vel = ev.vel || 90;
+    // schedule attack
+    Tone.Transport.schedule((time) => {
+      melodySynth.triggerAttack(midiToNoteName(ev.midi), time, vel/127);
+      // schedule release
+      Tone.Transport.scheduleOnce(() => melodySynth.triggerRelease(midiToNoteName(ev.midi)), time + dur * (60/bpm));
+    }, start);
+  }
+  Tone.Transport.start();
+  setStatus("Playing melody...");
+  isPlaying = true;
+}
+
+async function playChords() {
+  if (!currentState.chords || !currentState.chords.length) {
+    setStatus("Please generate first.");
+    return;
+  }
+  await Tone.start();
+  Tone.Transport.stop();
+  clearTransportListeners();
+
+  const bpm = currentState.bpm || 48;
+  Tone.Transport.bpm.value = bpm;
+  chordSynth = chordSynth || createSynthFor(document.getElementById('chordInst').value);
+
+  for (let ev of currentState.chords) {
+    const start = ev._start || 0;
+    const dur = ev.dur;
+    Tone.Transport.schedule((time) => {
+      // trigger chord attack
+      ev.notes.forEach(n => chordSynth.triggerAttack(midiToNoteName(n), time, 0.7));
+      // schedule release
+      Tone.Transport.scheduleOnce(() => ev.notes.forEach(n => chordSynth.triggerRelease(midiToNoteName(n))), time + dur * (60/bpm));
+    }, start);
+  }
+  Tone.Transport.start();
+  setStatus("Playing chords...");
+  isPlaying = true;
+}
+
+async function playBoth() {
+  if ((!currentState.melody || !currentState.melody.length) || (!currentState.chords || !currentState.chords.length)) {
+    setStatus("Please generate first.");
+    return;
+  }
+  await Tone.start();
+  Tone.Transport.stop();
+  clearTransportListeners();
+
+  const bpm = currentState.bpm || 48;
+  Tone.Transport.bpm.value = bpm;
+  melodySynth = melodySynth || createSynthFor(document.getElementById('melodyInst').value);
+  chordSynth = chordSynth || createSynthFor(document.getElementById('chordInst').value);
+
+  for (let ev of currentState.melody) {
+    const start = ev._start || 0;
+    const dur = ev.dur;
+    const vel = ev.vel || 90;
+    Tone.Transport.schedule((time) => {
+      melodySynth.triggerAttack(midiToNoteName(ev.midi), time, vel/127);
+      Tone.Transport.scheduleOnce(() => melodySynth.triggerRelease(midiToNoteName(ev.midi)), time + dur * (60/bpm));
+    }, start);
+  }
+  for (let ev of currentState.chords) {
+    const start = ev._start || 0;
+    const dur = ev.dur;
+    Tone.Transport.schedule((time) => {
+      ev.notes.forEach(n => chordSynth.triggerAttack(midiToNoteName(n), time, 0.7));
+      Tone.Transport.scheduleOnce(() => ev.notes.forEach(n => chordSynth.triggerRelease(midiToNoteName(n))), time + dur * (60/bpm));
+    }, start);
+  }
+
+  Tone.Transport.start();
+  setStatus("Playing both melody and chords...");
+  isPlaying = true;
+}
+
+function stopAll() {
+  Tone.Transport.stop();
+  Tone.Transport.cancel(0);
+  if (melodySynth) { try{ melodySynth.releaseAll && melodySynth.releaseAll(); }catch(e){} }
+  if (chordSynth) { try{ chordSynth.releaseAll && chordSynth.releaseAll(); }catch(e){} }
+  setStatus("Stopped.");
+  isPlaying = false;
+}
+
+/* ---------- MIDI Export using MidiWriterJS ---------- */
+
+function exportMidi(melodyOnly=false, chordsOnly=false) {
+  if ((!currentState.melody || !currentState.melody.length) && (!currentState.chords || !currentState.chords.length)) {
+    setStatus("Please generate first.");
+    return;
+  }
+  const MidiWriter = window.MidiWriter;
+  const trackMel = new MidiWriter.Track();
+  const trackCh = new MidiWriter.Track();
+  const ppq = 480;
+  // set tempo meta
+  const bpm = currentState.bpm || 48;
+  trackMel.setTempo(bpm);
+  trackCh.setTempo(bpm);
+  // program changes: choose program 0 for melody, 89 for pad-ish for chords as default
+  trackMel.addEvent(new MidiWriter.ProgramChangeEvent({instrument:1})); // 1 = bright acoustic (not critical)
+  trackCh.addEvent(new MidiWriter.ProgramChangeEvent({instrument:89}));
+
+  if (!chordsOnly) {
+    // build melody events
+    for (let ev of currentState.melody) {
+      // MidiWriterJS supports specifying pitch as note name like 'C4' and duration either as fraction strings or ticks via 'duration' param 'T###'
+      const pitch = midiToNoteName(ev.midi);
+      const ticks = Math.round(ev.dur * ppq);
+      const noteEvent = new MidiWriter.NoteEvent({pitch:[pitch], duration: 'T' + ticks, startTick: Math.round(ev._start * ppq), velocity: Math.round(ev.vel/127*100)});
+      trackMel.addEvent(noteEvent, function() { return {sequential:false}; });
+    }
+  }
+  if (!melodyOnly) {
+    // build chords
+    for (let i=0;i<currentState.chords.length;i++) {
+      const ev = currentState.chords[i];
+      const pitches = ev.notes.map(n => midiToNoteName(n));
+      const ticks = Math.round(ev.dur * ppq);
+      const noteEvent = new MidiWriter.NoteEvent({pitch:pitches, duration: 'T' + ticks, startTick: Math.round(ev._start * ppq), velocity: 70});
+      trackCh.addEvent(noteEvent, function(){ return {sequential:false}; });
+    }
+  }
+
+  let writer;
+  if (melodyOnly) {
+    writer = new MidiWriter.Writer([trackMel]);
+  } else if (chordsOnly) {
+    writer = new MidiWriter.Writer([trackCh]);
+  } else {
+    writer = new MidiWriter.Writer([trackMel, trackCh]);
+  }
+  const midiDataUri = writer.dataUri();
+  // create download link
+  const a = document.createElement('a');
+  a.href = midiDataUri;
+  const nameBase = 'meditative_' + (currentState.seed ? currentState.seed : 'random');
+  let name = nameBase + '_both.mid';
+  if (melodyOnly) name = nameBase + '_melody.mid';
+  if (chordsOnly) name = nameBase + '_chords.mid';
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setStatus('Exported MIDI: ' + name);
+}
+
+/* ---------- Event Listeners ---------- */
+
+document.getElementById('generate').addEventListener('click', async ()=>{
+  setStatus('Generating...');
+  await generate();
+});
+document.getElementById('randomize').addEventListener('click', ()=>{
+  const s = Math.floor(Math.random()*1e9);
+  document.getElementById('seed').value = String(s);
+  document.getElementById('seedDisplay').innerText = String(s);
+});
+
+document.getElementById('playMelody').addEventListener('click', async ()=>{
+  await playMelody();
+});
+document.getElementById('stopMelody').addEventListener('click', async ()=>{
+  stopAll();
+});
+document.getElementById('playChords').addEventListener('click', async ()=> {
+  await playChords();
+});
+document.getElementById('stopChords').addEventListener('click', ()=> {
+  stopAll();
+});
+document.getElementById('playBoth').addEventListener('click', async ()=> {
+  await playBoth();
+});
+document.getElementById('stopAll').addEventListener('click', ()=> {
+  stopAll();
+});
+
+document.getElementById('exportMel').addEventListener('click', ()=> exportMidi(true,false));
+document.getElementById('exportCh').addEventListener('click', ()=> exportMidi(false,true));
+document.getElementById('exportBoth').addEventListener('click', ()=> exportMidi(false,false));
+
+/* Initialize with a default generation so the user can immediately play */
+(async function init(){
+  // small delay to ensure Tone is ready
+  await new Promise(r => setTimeout(r,100));
+  document.getElementById('seed').value = '';
+  await generate();
+})();
+
+</script>
+</body>
+</html>
