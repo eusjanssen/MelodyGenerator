@@ -1,0 +1,3 @@
+Flask>=2.0
+mido>=1.2.10
+python-rtmidi>=1.4.0  # optional, not required to run the server; mido alone writes MIDI files fine
